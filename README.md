@@ -23,7 +23,9 @@ Send to LLM Enhanced is a Burp Suite extension that integrates powerful AI analy
     Test different prompt templates interactively within the extension.
 
     💬 Custom Templates
-    Modify or add your own prompt formats via the "Config" tab.
+    Modify or add your own prompt formats via the "Config" tab. The configuration
+    screen now shows a list of templates beside an editable prompt area for easier
+    management, and the Pentester Tools tab displays prompts and responses in a split view.
 
 ## 📸 Screenshots
 

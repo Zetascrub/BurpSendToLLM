@@ -184,22 +184,60 @@ public class BurpExtender implements IBurpExtender, IContextMenuFactory, ITab {
         JTabbedPane tabs = new JTabbedPane();
 
         // ========== Config Tab ==========
-        JPanel cfg = new JPanel(new BorderLayout(5, 5));
+        JPanel cfg = new JPanel(new BorderLayout(10, 10));
         cfg.setBorder(new EmptyBorder(10, 10, 10, 10));
-        JPanel fields = new JPanel(new GridLayout(2, 2, 5, 5));
-        fields.add(new JLabel("Server URL:"));
+
+        // Top input fields
+        JPanel fields = new JPanel(new GridBagLayout());
+        GridBagConstraints gc = new GridBagConstraints();
+        gc.insets = new Insets(2, 2, 2, 2);
+        gc.fill = GridBagConstraints.HORIZONTAL;
+
+        gc.gridx = 0;
+        gc.gridy = 0;
+        fields.add(new JLabel("Server URL:"), gc);
+        gc.gridx = 1;
+        gc.weightx = 1.0;
         urlField = new JTextField("http://localhost:11434/v1/chat/completions");
-        fields.add(urlField);
-        fields.add(new JLabel("Model:"));
+        fields.add(urlField, gc);
+
+        gc.gridx = 0;
+        gc.gridy = 1;
+        gc.weightx = 0;
+        fields.add(new JLabel("Model:"), gc);
+        gc.gridx = 1;
+        gc.weightx = 1.0;
         modelField = new JTextField("llama3.2");
-        fields.add(modelField);
+        fields.add(modelField, gc);
+
         cfg.add(fields, BorderLayout.NORTH);
 
-        templateCombo = new JComboBox<>(templates.keySet().toArray(new String[0]));
-        templateCombo.addActionListener(e -> templateEditor.setText(templates.get(templateCombo.getSelectedItem())));
-        cfg.add(templateCombo, BorderLayout.CENTER);
-        templateEditor = new JTextArea(templates.get(templateCombo.getItemAt(0)));
-        cfg.add(new JScrollPane(templateEditor), BorderLayout.SOUTH);
+        // Template list and editor
+        JList<String> templateList = new JList<>(templates.keySet().toArray(new String[0]));
+        templateEditor = new JTextArea(templates.values().iterator().next());
+        templateEditor.setLineWrap(true);
+        templateEditor.setWrapStyleWord(true);
+        templateList.addListSelectionListener(e -> {
+            String key = templateList.getSelectedValue();
+            if (key != null) {
+                templateEditor.setText(templates.get(key));
+            }
+        });
+
+        JSplitPane templatePane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT,
+                new JScrollPane(templateList), new JScrollPane(templateEditor));
+        templatePane.setResizeWeight(0.3);
+        templatePane.setOneTouchExpandable(true);
+        cfg.add(templatePane, BorderLayout.CENTER);
+
+        JButton saveTemplate = new JButton("Save Template");
+        saveTemplate.addActionListener(e -> {
+            String sel = templateList.getSelectedValue();
+            if (sel != null) {
+                templates.put(sel, templateEditor.getText());
+            }
+        });
+        cfg.add(saveTemplate, BorderLayout.SOUTH);
 
         // ========== History Tab ==========
         JPanel histPanel = new JPanel(new BorderLayout());
@@ -231,8 +269,8 @@ public class BurpExtender implements IBurpExtender, IContextMenuFactory, ITab {
         });
 
         // ========== Pentester Tools Tab ==========
-        JPanel pentestPanel = new JPanel(new BorderLayout());
-        JPanel controlPanel = new JPanel(new GridLayout(4, 1, 5, 5));
+        JPanel pentestPanel = new JPanel(new BorderLayout(5, 5));
+        JPanel controlPanel = new JPanel(new BorderLayout(5, 5));
 
         JComboBox<String> toolSelector = new JComboBox<>(pentestTemplates.keySet().toArray(new String[0]));
         JTextArea toolPromptEditor = new JTextArea(pentestTemplates.get(toolSelector.getItemAt(0)));
@@ -244,13 +282,19 @@ public class BurpExtender implements IBurpExtender, IContextMenuFactory, ITab {
         JTextArea toolResponseArea = new JTextArea();
         toolResponseArea.setEditable(false);
 
-        controlPanel.add(new JLabel("Select Tool:"));
-        controlPanel.add(toolSelector);
-        controlPanel.add(new JScrollPane(toolPromptEditor));
-        controlPanel.add(sendButton);
+        JPanel selectorRow = new JPanel(new BorderLayout(5, 5));
+        selectorRow.add(new JLabel("Select Tool:"), BorderLayout.WEST);
+        selectorRow.add(toolSelector, BorderLayout.CENTER);
+        controlPanel.add(selectorRow, BorderLayout.NORTH);
+        controlPanel.add(new JScrollPane(toolPromptEditor), BorderLayout.CENTER);
+        controlPanel.add(sendButton, BorderLayout.SOUTH);
 
-        pentestPanel.add(controlPanel, BorderLayout.NORTH);
-        pentestPanel.add(new JScrollPane(toolResponseArea), BorderLayout.CENTER);
+        JSplitPane toolSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
+                controlPanel, new JScrollPane(toolResponseArea));
+        toolSplit.setResizeWeight(0.5);
+        toolSplit.setOneTouchExpandable(true);
+
+        pentestPanel.add(toolSplit, BorderLayout.CENTER);
 
         sendButton.addActionListener(e -> {
             if (lastSelectedMessage == null) {
