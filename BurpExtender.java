@@ -1,137 +1,374 @@
-import burp.*;
+package burp;
+
+import java.util.List;
+import java.util.ArrayList;
+
+import burp.IBurpExtender;
+import burp.IBurpExtenderCallbacks;
+import burp.IContextMenuFactory;
+import burp.IContextMenuInvocation;
+import burp.IExtensionHelpers;
+import burp.IHttpRequestResponse;
+import burp.ITab;
+
+import java.net.URL;
+import java.net.HttpURLConnection;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+
+
+import com.formdev.flatlaf.FlatDarkLaf;
+import org.json.JSONObject;
+import org.json.JSONArray;
+
+import net.miginfocom.swing.MigLayout;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
-import javax.swing.event.ListSelectionListener;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
+import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
-import java.awt.*;
-import java.util.*;
-import java.util.List;
+import javax.swing.table.TableRowSorter;
+
+import java.awt.BorderLayout;
+import java.awt.Color;
+import java.awt.Component;
+import java.awt.event.ActionEvent;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.ExecutionException;
 
-public class BurpExtender implements IBurpExtender, IContextMenuFactory, ITab {
+// AWT layout & geometry classes
+import java.awt.Rectangle;
+import java.awt.Dimension;
+import java.awt.FlowLayout;
+import java.awt.GridBagLayout;
+import java.awt.GridBagConstraints;
+import java.awt.Insets;
+
+// Swing widgets for advanced UI
+import javax.swing.JTextArea;
+import javax.swing.JComboBox;
+import javax.swing.JSplitPane;
+
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
+
+
+
+public class BurpExtender implements burp.IBurpExtender, burp.IContextMenuFactory, burp.ITab {
     private IBurpExtenderCallbacks callbacks;
+    private IContextMenuInvocation lastInvocation;
+    private IHttpRequestResponse lastSelectedMessage;
     private IExtensionHelpers helpers;
 
-    private JTextField urlField;
+    // UI components
+    private JPanel mainPanel;
+    private JTabbedPane tabbedPane;
+    private DefaultTableModel tableModel;
+    private JTable resultsTable;
+    private TableRowSorter<DefaultTableModel> sorter;
+    private JTextField filterField;
+    private JProgressBar progressBar;
+
+    
+    // SendToLLM components
+    private JTextArea promptArea;
+    private JTextArea responseArea;
+    private JButton sendButton;
+    private String endpoint = "http://localhost:11434";
+    private String model = "ollama";
+
+    
+    // split your URL into host:port + suffix
+    private JTextField serverField;
+    private JLabel suffixLabel;
+
     private JTextField modelField;
 
-    private Map<String, String> templates = new LinkedHashMap<>();
-    private final Map<String, String> pentestTemplates = new LinkedHashMap<>() {{
-        put("Header Analyzer", "Analyze these headers:\n{{ headers }}");
-        put("Param Guess Helper", "Here is a request. Suggest hidden or interesting parameters to fuzz:\n{{ request }}");
-        put("Vuln Suggestor", "Identify potential vulnerabilities in this HTTP request:\n{{ request }}");
-        put("Payload Generator", "Generate a payload for possible XSS injection in this request:\n{{ request }}");
-    }};
+    // Settings
+    private String serverUrl = "http://localhost:8000";
+    private String modelName = "llama3.2";
 
-    private JComboBox<String> templateCombo;
-    private JTextArea templateEditor;
+    // Templates
+    private final Map<String, String> templates = new LinkedHashMap<>();
+    private final Map<String, String> pentestTemplates = new LinkedHashMap<>();
 
+    // For your historical view
     private DefaultTableModel historyModel;
-    private JTable historyTable;
-    private List<String> fullResponses = new ArrayList<>();
-    private JTextArea detailArea;
+    private JTable          historyTable;
+    private List<String>    fullResponses = new ArrayList<>();
+    private JTextArea       detailArea;
 
-    private IHttpRequestResponse lastSelectedMessage;
+    // For the template editor tab
+    private JComboBox<String> templateCombo;
+    private JTextArea         templateEditor;
 
-    private JPanel mainPanel;
+    // For your pentest‑tools tab
+    private JComboBox<String>    toolSelector;
+    private JTextArea            toolPromptEditor;
+    private JTextArea            toolResponseArea;
+
 
     @Override
     public void registerExtenderCallbacks(IBurpExtenderCallbacks callbacks) {
         this.callbacks = callbacks;
         this.helpers = callbacks.getHelpers();
+        callbacks.printOutput("SendToLLM loaded—version 2025.07.23.2");
         callbacks.setExtensionName("Send to LLM Enhanced");
-
-        templates.put("Basic Analysis", "Analyze the following HTTP request:\n{{ request }}");
-        templates.put("Security Review", "You are a security auditor. Review this request and list any vulnerabilities:\n{{ request }}");
-
-        buildUi();
         callbacks.registerContextMenuFactory(this);
+
+        // Load persisted settings
+        String savedUrl = callbacks.loadExtensionSetting("serverUrl");
+        if (savedUrl != null) serverUrl = savedUrl;
+        String savedModel = callbacks.loadExtensionSetting("modelName");
+        if (savedModel != null) modelName = savedModel;
+
+        // Initialize templates
+        templates.put("Basic Analysis",
+            "Analyze the following HTTP request and return structured JSON.\n{{ request }}");
+        templates.put("Security Review",
+            "You are a security auditor. Review this request and return vulnerabilities as JSON.\n{{ request }}");
+        // Pentest tools templates
+        pentestTemplates.put("Header Analyzer",
+            "Analyze the following HTTP headers and return ONLY a valid JSON object listing vulnerabilities.\nHeaders:\n{{ headers }}");
+        pentestTemplates.put("Param Guess Helper",
+            "Suggest hidden parameters to fuzz. Return JSON:\n{ \"parameters\": [ ... ] }\nRequest:\n{{ request }}");
+        pentestTemplates.put("Vuln Suggestor",
+            "Analyze the request for vulnerabilities. Return JSON.\n{{ request }}");
+
+        applyLookAndFeel();
+        SwingUtilities.invokeLater(() -> {
+        createUi();
         callbacks.addSuiteTab(this);
+    });
+    }
+
+
+    private void applyLookAndFeel() {
+        try {
+            
+        } catch (Exception e) {
+            callbacks.printError("Failed to apply Look & Feel: " + e.getMessage());
+        }
+    }
+
+
+    private void initUi() {
+        mainPanel = new JPanel(new BorderLayout());
+        mainPanel.setBorder(new EmptyBorder(5,5,5,5));
+        tabbedPane = new JTabbedPane();
+        tabbedPane.addTab("Main", createMainPanel());
+        tabbedPane.addTab("Settings", createSettingsPanel());
+        mainPanel.add(tabbedPane, BorderLayout.CENTER);
+    }
+
+    private JPanel createMainPanel() {
+        JPanel panel = new JPanel(new MigLayout("fill, insets 5", "[grow,fill]", "[][grow][]"));
+        JToolBar toolbar = new JToolBar(); toolbar.setFloatable(false);
+        toolbar.add(new JButton(new AbstractAction("Clear") {
+            @Override public void actionPerformed(ActionEvent e) { tableModel.setRowCount(0); }
+        }));
+        panel.add(toolbar, "dock north, wrap");
+
+        panel.add(new JLabel("Filter:"));
+        filterField = new JTextField(15); panel.add(filterField, "wrap");
+
+        tableModel = new DefaultTableModel(new String[]{"Prompt","Response"}, 0);
+        resultsTable = new JTable(tableModel);
+        resultsTable.setDefaultRenderer(Object.class, new DefaultTableCellRenderer() {
+            @Override public Component getTableCellRendererComponent(JTable t, Object v, boolean s, boolean f, int r, int c) {
+                Component comp = super.getTableCellRendererComponent(t,v,s,f,r,c);
+                if (!s) comp.setBackground(r % 2 == 0 ? Color.WHITE : new Color(240,240,240));
+                return comp;
+            }
+        });
+        sorter = new TableRowSorter<>(tableModel);
+        resultsTable.setRowSorter(sorter);
+        filterField.getDocument().addDocumentListener(new DocumentListener() {
+            private void update() {
+                String t = filterField.getText();
+                sorter.setRowFilter(t.trim().isEmpty() ? null : RowFilter.regexFilter("(?i)" + t));
+            }
+            public void insertUpdate(DocumentEvent e) { update(); }
+            public void removeUpdate(DocumentEvent e) { update(); }
+            public void changedUpdate(DocumentEvent e) { update(); }
+        });
+        panel.add(new JScrollPane(resultsTable), "grow, wrap");
+
+        progressBar = new JProgressBar(); progressBar.setStringPainted(true);
+        panel.add(progressBar, "growx");
+        return panel;
     }
 
     @Override
     public java.util.List<JMenuItem> createMenuItems(IContextMenuInvocation invocation) {
         IHttpRequestResponse[] msgs = invocation.getSelectedMessages();
         if (msgs == null || msgs.length == 0) return Collections.emptyList();
-
-        IHttpRequestResponse message = msgs[0];
-        lastSelectedMessage = message;
-
-        JMenu mainMenu = new JMenu("Send to →");
-
-        JMenuItem defaultItem = new JMenuItem("Analyze Request");
-        defaultItem.addActionListener(e -> runLLMWithTemplate("Security Review", message));
-        mainMenu.add(defaultItem);
-
+        lastInvocation = invocation;
+        lastSelectedMessage = msgs[0];
+        JMenu menu = new JMenu("Send to →");
+        JMenuItem basic = new JMenuItem("Basic Analysis");
+        basic.addActionListener(e -> runLLMWithTemplate("Basic Analysis", msgs[0]));
+        menu.add(basic);
+        JMenuItem sec = new JMenuItem("Security Review");
+        sec.addActionListener(e -> sendWithTemplate("Security Review", msgs[0]));
+        menu.add(sec);
+        menu.addSeparator();
         for (String key : pentestTemplates.keySet()) {
             JMenuItem item = new JMenuItem(key);
-            item.addActionListener(e -> runPentesterTool(key, message));
-            mainMenu.add(item);
+            item.addActionListener(e -> runPentesterTool(key, msgs[0]));
+            menu.add(item);
         }
+        return Arrays.asList(menu);
+    }
 
-        return Collections.singletonList(mainMenu);
+    private JPanel createSettingsPanel() {
+        JPanel panel = new JPanel(new MigLayout("fill, insets 5", "[][grow]", "[]10[]"));
+        
+        // user only edits host:port
+        panel.add(new JLabel("Server (IP:Port):"), "right");
+        serverField = new JTextField("127.0.0.1:11434", 30);
+        suffixLabel = new JLabel("/v1/chat/completions");
+        suffixLabel.setEnabled(false);
+        panel.add(serverField, "growx");
+        panel.add(suffixLabel, "wrap");
+
+        panel.add(new JLabel("Model Name:"), "right");
+        modelField = new JTextField(modelName); panel.add(modelField, "growx, wrap");
+        JButton save = new JButton("Save");
+        save.addActionListener(e -> saveSettings());
+        panel.add(save, "span 2, center");
+        return panel;
+    }
+
+    private void saveSettings() {
+        String server = serverField.getText().trim();
+        // simply store the scheme + host:port
+        serverUrl = "http://" + server;
+
+        modelName = modelField.getText().trim();
+        callbacks.saveExtensionSetting("serverUrl", serverUrl);
+        callbacks.saveExtensionSetting("modelName", modelName);
+        JOptionPane.showMessageDialog(mainPanel, "Settings saved.", "Settings", JOptionPane.INFORMATION_MESSAGE);
     }
 
     private void runLLMWithTemplate(String templateName, IHttpRequestResponse message) {
-        String serverUrl = urlField.getText().trim();
-        String modelName = modelField.getText().trim();
-        String rawRequest = helpers.bytesToString(message.getRequest());
+        // Build the exact endpoint and hand it to sendPromptToLLM
+        callbacks.printOutput("▶️ runLLMWithTemplate(template=" + templateName + ")");
+        String host     = serverField.getText().trim();
+        String suffix   = suffixLabel.getText();  // "/v1/chat/completions"
+        String fullUrl  = "http://" + host + suffix;
 
+        String model    = modelField.getText().trim();
+        String rawReq   = helpers.bytesToString(message.getRequest());
         String template = templates.getOrDefault(templateName, "{{ request }}");
-        String prompt = template.replace("{{ request }}", rawRequest);
-        sendPromptToLLM(prompt, serverUrl, modelName);
+        String prompt   = template.replace("{{ request }}", rawReq);
+
+        sendPromptToLLM(prompt);
     }
 
     private void runPentesterTool(String toolName, IHttpRequestResponse message) {
-        String serverUrl = urlField.getText().trim();
-        String modelName = modelField.getText().trim();
-        String rawRequest = helpers.bytesToString(message.getRequest());
-        String headersOnly = rawRequest.split("\r\n\r\n")[0];
+        callbacks.printOutput("▶️ runPentesterTool(tool=" + toolName + ")");
+        String host     = serverField.getText().trim();
+        String suffix   = suffixLabel.getText();
+        String fullUrl  = "http://" + host + suffix;
+
+        String model    = modelField.getText().trim();
+        String rawReq   = helpers.bytesToString(message.getRequest());
+        String headers  = rawReq.split("\r\n\r\n")[0];
 
         String template = pentestTemplates.getOrDefault(toolName, "{{ request }}");
-        String prompt = template.replace("{{ request }}", rawRequest).replace("{{ headers }}", headersOnly);
-        sendPromptToLLM(prompt, serverUrl, modelName);
+        String prompt   = template
+                            .replace("{{ request }}", rawReq)
+                            .replace("{{ headers }}", headers);
+
+        sendPromptToLLM(prompt);
     }
 
-    private void sendPromptToLLM(String prompt, String serverUrl, String modelName) {
-        new SwingWorker<String, Void>() {
-            @Override
-            protected String doInBackground() throws Exception {
-                String escaped = prompt.replace("\\", "\\\\")
-                        .replace("\"", "\\\"")
-                        .replace("\r", "\\r")
-                        .replace("\n", "\\n");
-                String payload = String.format(
-                        "{\"model\":\"%s\",\"messages\":[{\"role\":\"user\",\"content\":\"%s\"}]}",
-                        modelName, escaped
-                );
-                return httpPost(serverUrl, payload);
+    private void sendPromptToLLM(String promptText) {
+        callbacks.printOutput("▶️ sendPromptToLLM called. endpoint=" + endpoint + " model=" + model);
+        HttpURLConnection conn = null;
+        String finalResponse = "";
+        try {
+            // Build JSON payload using built-in org.json
+            JSONObject payload = new JSONObject();
+            payload.put("model", model);
+            JSONArray messages = new JSONArray();
+            JSONObject message = new JSONObject();
+            message.put("role", "user");
+            message.put("content", promptText);
+            messages.put(message);
+            payload.put("messages", messages);
+            String jsonBody = payload.toString();
+            callbacks.printOutput("🔍 JSON payload: " + jsonBody);
+
+            // HTTP POST
+            URL url = new URL(endpoint);
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setDoOutput(true);
+            try (OutputStream os = conn.getOutputStream()) {
+                os.write(jsonBody.getBytes(StandardCharsets.UTF_8));
             }
 
-            @Override
-            protected void done() {
-                try {
-                    String fullJson = get();
-                    String content = extractContent(fullJson);
-                    int row = historyModel.getRowCount();
-                    historyModel.addRow(new Object[]{System.currentTimeMillis(), prompt, content});
-                    fullResponses.add(fullJson);
-                    SwingUtilities.invokeLater(() -> {
-                        Rectangle rect = historyTable.getCellRect(row, 0, true);
-                        historyTable.scrollRectToVisible(rect);
-                    });
-                    showResponse(content);
-                } catch (InterruptedException | ExecutionException ex) {
-                    callbacks.issueAlert("[LLM] Error: " + ex.getMessage());
-                }
+            int status = conn.getResponseCode();
+            callbacks.printOutput("ℹ️ HTTP status: " + status);
+            InputStream in = status < 400 ? conn.getInputStream() : conn.getErrorStream();
+            String response = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            callbacks.printOutput("✅ LLM raw response: " + response);
+
+            // Parse and extract content using org.json
+            JSONObject root = new JSONObject(response);
+            JSONArray choices = root.optJSONArray("choices");
+            if (choices != null && choices.length() > 0) {
+                JSONObject choice = choices.getJSONObject(0).getJSONObject("message");
+                finalResponse = choice.optString("content", "");
             }
-        }.execute();
+        } catch (Exception e) {
+            callbacks.printError("❌ sendPromptToLLM exception: " + e.getClass().getSimpleName() + " – " + e.getMessage());
+            finalResponse = "Error: " + e.getMessage();
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+
+        final String capturePrompt = promptText;
+        final String captureResponse = finalResponse;
+        SwingUtilities.invokeLater(() -> {
+            promptArea.setText(capturePrompt);
+            responseArea.setText(captureResponse);
+            tableModel.addRow(new Object[]{capturePrompt, captureResponse});
+        });
     }
 
-    private String extractContent(String json) {
+
+
+
+    private String escapeJson(String s) {
+        return s.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r");
+    }
+
+
+
+
+
+    private void sendWithTemplate(String name, IHttpRequestResponse msg) {
+        runLLMWithTemplate(name, msg);
+    }
+
+    private String extractStructuredContent(String json) {
         try {
             org.json.JSONObject root = new org.json.JSONObject(json);
+            if (root.has("content")) return root.getString("content");
             org.json.JSONArray choices = root.getJSONArray("choices");
             return choices.getJSONObject(0).getJSONObject("message").getString("content");
         } catch (Exception e) {
@@ -139,29 +376,114 @@ public class BurpExtender implements IBurpExtender, IContextMenuFactory, ITab {
         }
     }
 
-    private String httpPost(String url, String payload) throws Exception {
-        java.net.HttpURLConnection conn = (java.net.HttpURLConnection)
-                new java.net.URL(url).openConnection();
-        conn.setRequestMethod("POST");
-        conn.setDoOutput(true);
-        conn.setRequestProperty("Content-Type", "application/json");
-        byte[] out = payload.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        conn.setRequestProperty("Content-Length", String.valueOf(out.length));
-        try (java.io.OutputStream os = conn.getOutputStream()) {
-            os.write(out);
-        }
-        java.io.InputStream is = conn.getResponseCode() < 300 ? conn.getInputStream() : conn.getErrorStream();
-        try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(is))) {
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = reader.readLine()) != null) sb.append(line).append("\n");
-            return sb.toString();
+    private String formatVulnsAsText(String fullJson) {
+        try {
+            org.json.JSONObject root = new org.json.JSONObject(fullJson);
+            org.json.JSONArray choices = root.getJSONArray("choices");
+            String content = choices.getJSONObject(0).getJSONObject("message").getString("content");
+
+            String jsonPart = extractJsonBlock(content);
+            if (jsonPart == null) {
+                jsonPart = content.trim(); // no code block, use the whole thing
+            }
+
+            // Try parsing as JSONObject first
+            try {
+                org.json.JSONObject parsed = new org.json.JSONObject(jsonPart);
+                org.json.JSONArray vulns = parsed.optJSONArray("vulnerabilities");
+
+                if (vulns == null || vulns.length() == 0) {
+                    return "✅ No vulnerabilities found.";
+                }
+
+                return formatVulnArray(vulns);
+            } catch (org.json.JSONException ex) {
+                // Not an object — try as raw array
+                org.json.JSONArray array = new org.json.JSONArray(jsonPart);
+                return formatVulnArray(array);
+            }
+
+        } catch (Exception e) {
+            return "⚠️ Could not parse JSON content:\n" + e.getMessage();
         }
     }
 
-    private void showResponse(String content) {
+
+    private String formatVulnArray(org.json.JSONArray vulns) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < vulns.length(); i++) {
+            org.json.JSONObject vuln = vulns.getJSONObject(i);
+
+            String name = vuln.optString("vulnerability",
+                        vuln.optString("type",
+                        vuln.optString("name", "N/A")));
+
+            String desc = vuln.optString("description", "N/A");
+            String severity = vuln.optString("severity",
+                            vuln.optString("risk_level", "N/A"));
+            String recommendation = vuln.optString("recommendation", "N/A");
+
+            sb.append("• Vulnerability: ").append(name).append("\n");
+            sb.append("  Description: ").append(desc).append("\n");
+            if (!severity.equals("N/A")) {
+                sb.append("  Severity: ").append(severity).append("\n");
+            }
+
+            sb.append("  Recommendation: ").append(recommendation).append("\n\n");
+        }
+        return sb.toString().trim();
+    }
+
+
+    private void sendPentestTool(String key, IHttpRequestResponse msg) {
+        runPentesterTool(key, msg);
+    }
+
+    private void sendPrompt(String prompt, String url, String model) {
+        new SwingWorker<String, Void>() {
+            @Override protected String doInBackground() throws Exception {
+                progressBar.setIndeterminate(true);
+                String payload = String.format(
+                    "{\"model\":\"%s\",\"messages\":[{\"role\":\"user\",\"content\":\"%s\"}],\"options\":{}}",
+                    model, prompt.replace("\\", "\\\\").replace("\"", "\\\"")
+                );
+                return httpPost(url, payload);
+            }
+            @Override protected void done() {
+                try {
+                    String res = get();
+                    progressBar.setIndeterminate(false);
+                    tableModel.addRow(new Object[]{prompt, res});
+                } catch (InterruptedException | ExecutionException ex) {
+                    callbacks.issueAlert("Error: " + ex.getMessage());
+                }
+            }
+        }.execute();
+    }
+
+
+
+    private String httpPost(String url, String body) throws Exception {
+        java.net.HttpURLConnection conn = (java.net.HttpURLConnection)
+            new java.net.URL(url).openConnection();
+        conn.setRequestMethod("POST"); conn.setDoOutput(true);
+        conn.setRequestProperty("Content-Type", "application/json");
+        byte[] out = body.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        conn.setRequestProperty("Content-Length", String.valueOf(out.length));
+        try (java.io.OutputStream os = conn.getOutputStream()) { os.write(out); }
+        try (java.io.InputStream is = conn.getResponseCode() < 300 ? conn.getInputStream() : conn.getErrorStream();
+             java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(is))) {
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) sb.append(line).append('\n');
+            return sb.toString().trim();
+        }
+    }
+
+    private void showResponse(String rawJson) {
         SwingUtilities.invokeLater(() -> {
-            JTextArea area = new JTextArea(content);
+            String formatted = formatVulnsAsText(rawJson);
+            JTextArea area = new JTextArea(formatted);
             area.setEditable(false);
             area.setLineWrap(true);
             area.setWrapStyleWord(true);
@@ -169,153 +491,178 @@ public class BurpExtender implements IBurpExtender, IContextMenuFactory, ITab {
         });
     }
 
-    @Override
-    public String getTabCaption() {
-        return "LLM Console";
-    }
+    private String extractJsonBlock(String text) {
+        try {
+            int start = text.indexOf("```");
+            if (start == -1) return null;
 
-    @Override
-    public Component getUiComponent() {
-        return mainPanel;
-    }
+            int end = text.indexOf("```", start + 3);
+            if (end == -1) return null;
 
-    private void buildUi() {
-        mainPanel = new JPanel(new BorderLayout());
-        JTabbedPane tabs = new JTabbedPane();
+            String block = text.substring(start + 3, end).trim();
 
-        // ========== Config Tab ==========
-        JPanel cfg = new JPanel(new BorderLayout(10, 10));
-        cfg.setBorder(new EmptyBorder(10, 10, 10, 10));
-
-        // Top input fields
-        JPanel fields = new JPanel(new GridBagLayout());
-        GridBagConstraints gc = new GridBagConstraints();
-        gc.insets = new Insets(2, 2, 2, 2);
-        gc.fill = GridBagConstraints.HORIZONTAL;
-
-        gc.gridx = 0;
-        gc.gridy = 0;
-        fields.add(new JLabel("Server URL:"), gc);
-        gc.gridx = 1;
-        gc.weightx = 1.0;
-        urlField = new JTextField("http://localhost:11434/v1/chat/completions");
-        fields.add(urlField, gc);
-
-        gc.gridx = 0;
-        gc.gridy = 1;
-        gc.weightx = 0;
-        fields.add(new JLabel("Model:"), gc);
-        gc.gridx = 1;
-        gc.weightx = 1.0;
-        modelField = new JTextField("llama3.2");
-        fields.add(modelField, gc);
-
-        cfg.add(fields, BorderLayout.NORTH);
-
-        // Template list and editor
-        JList<String> templateList = new JList<>(templates.keySet().toArray(new String[0]));
-        templateEditor = new JTextArea(templates.values().iterator().next());
-        templateEditor.setLineWrap(true);
-        templateEditor.setWrapStyleWord(true);
-        templateList.addListSelectionListener(e -> {
-            String key = templateList.getSelectedValue();
-            if (key != null) {
-                templateEditor.setText(templates.get(key));
+            // Remove leading "json" if present
+            if (block.toLowerCase().startsWith("json")) {
+                block = block.substring(4).trim();
             }
-        });
 
-        JSplitPane templatePane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT,
-                new JScrollPane(templateList), new JScrollPane(templateEditor));
-        templatePane.setResizeWeight(0.3);
-        templatePane.setOneTouchExpandable(true);
-        cfg.add(templatePane, BorderLayout.CENTER);
-
-        JButton saveTemplate = new JButton("Save Template");
-        saveTemplate.addActionListener(e -> {
-            String sel = templateList.getSelectedValue();
-            if (sel != null) {
-                templates.put(sel, templateEditor.getText());
-            }
-        });
-        cfg.add(saveTemplate, BorderLayout.SOUTH);
-
-        // ========== History Tab ==========
-        JPanel histPanel = new JPanel(new BorderLayout());
-        historyModel = new DefaultTableModel(new Object[]{"Time", "Prompt", "Response"}, 0);
-        historyTable = new JTable(historyModel);
-
-        detailArea = new JTextArea();
-        detailArea.setEditable(false);
-        detailArea.setLineWrap(true);
-        detailArea.setWrapStyleWord(true);
-        JScrollPane detailScrollPane = new JScrollPane(detailArea);
-        detailScrollPane.setPreferredSize(new Dimension(0, 150));
-
-        JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
-                new JScrollPane(historyTable), detailScrollPane);
-        splitPane.setResizeWeight(0.8);
-        splitPane.setOneTouchExpandable(true);
-
-        histPanel.add(splitPane, BorderLayout.CENTER);
-
-        historyTable.getSelectionModel().addListSelectionListener(e -> {
-            if (!e.getValueIsAdjusting()) {
-                int idx = historyTable.getSelectedRow();
-                if (idx >= 0 && idx < fullResponses.size()) {
-                    String fullJson = fullResponses.get(idx);
-                    detailArea.setText(extractContent(fullJson));
+            // Remove all lines with JavaScript-style comments (//)
+            String[] lines = block.split("\n");
+            StringBuilder cleaned = new StringBuilder();
+            for (String line : lines) {
+                String trimmed = line.trim();
+                if (!trimmed.startsWith("//")) {
+                    // Also remove inline comments (e.g. "description": "...", // hint)
+                    int commentIndex = trimmed.indexOf("//");
+                    if (commentIndex != -1) {
+                        trimmed = trimmed.substring(0, commentIndex).trim();
+                    }
+                    cleaned.append(trimmed).append("\n");
                 }
             }
-        });
 
-        // ========== Pentester Tools Tab ==========
-        JPanel pentestPanel = new JPanel(new BorderLayout(5, 5));
-        JPanel controlPanel = new JPanel(new BorderLayout(5, 5));
+            return cleaned.toString().trim();
+        } catch (Exception e) {
+            return null;
+        }
+    }
 
-        JComboBox<String> toolSelector = new JComboBox<>(pentestTemplates.keySet().toArray(new String[0]));
-        JTextArea toolPromptEditor = new JTextArea(pentestTemplates.get(toolSelector.getItemAt(0)));
-        toolPromptEditor.setLineWrap(true);
-        toolPromptEditor.setWrapStyleWord(true);
-        toolSelector.addActionListener(e -> toolPromptEditor.setText(pentestTemplates.get(toolSelector.getSelectedItem())));
 
-        JButton sendButton = new JButton("Send to LLM");
-        JTextArea toolResponseArea = new JTextArea();
-        toolResponseArea.setEditable(false);
+    private void standardizeComponentSize(JComponent... components) {
+        Dimension size = new Dimension(250, 25); // Consistent width & height
+        for (JComponent comp : components) {
+            comp.setPreferredSize(size);
+            comp.setMaximumSize(size);
+            comp.setMinimumSize(size);
+        }
+    }
+    
+    private void createUi() {
+        // ======== Root panel & tabbed pane ========
+        mainPanel = new JPanel(new BorderLayout());
+        mainPanel.setBorder(new EmptyBorder(5, 5, 5, 5));
+        tabbedPane = new JTabbedPane();
 
-        JPanel selectorRow = new JPanel(new BorderLayout(5, 5));
-        selectorRow.add(new JLabel("Select Tool:"), BorderLayout.WEST);
-        selectorRow.add(toolSelector, BorderLayout.CENTER);
-        controlPanel.add(selectorRow, BorderLayout.NORTH);
-        controlPanel.add(new JScrollPane(toolPromptEditor), BorderLayout.CENTER);
-        controlPanel.add(sendButton, BorderLayout.SOUTH);
+        // ======== 1) Main Tab ========
+        tabbedPane.addTab("Main", createMainPanel());
 
-        JSplitPane toolSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
-                controlPanel, new JScrollPane(toolResponseArea));
-        toolSplit.setResizeWeight(0.5);
-        toolSplit.setOneTouchExpandable(true);
+        // ======== 2) Settings Tab ========
+        tabbedPane.addTab("Settings", createSettingsPanel());
 
-        pentestPanel.add(toolSplit, BorderLayout.CENTER);
+        // ======== 3) Pentester Tools Tab ========
+        JPanel pentestPanel = new JPanel(new BorderLayout(10, 10));
+        pentestPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        // … copy your pentestPanel UI and sendButton ActionListener here …
+        tabbedPane.addTab("Pentester Tools", pentestPanel);
 
-        sendButton.addActionListener(e -> {
-            if (lastSelectedMessage == null) {
-                callbacks.issueAlert("No previous request available. Right-click a request and use 'Send to →' first.");
-                return;
+        // ======== 4) SendToLLM Tab ========
+        JPanel llmPanel = new JPanel(new BorderLayout(5,5));
+        JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT);
+        split.setResizeWeight(0.5);
+
+        // Prompt area
+        promptArea = new JTextArea();
+        promptArea.setLineWrap(true);
+        promptArea.setWrapStyleWord(true);
+        promptArea.setEditable(false);
+        JScrollPane promptScroll = new JScrollPane(promptArea);
+        promptScroll.setBorder(BorderFactory.createTitledBorder("Prompt"));
+
+        // Response area
+        responseArea = new JTextArea();
+        responseArea.setLineWrap(true);
+        responseArea.setWrapStyleWord(true);
+        responseArea.setEditable(false);
+        JScrollPane responseScroll = new JScrollPane(responseArea);
+        responseScroll.setBorder(BorderFactory.createTitledBorder("Response"));
+
+        split.setTopComponent(promptScroll);
+        split.setBottomComponent(responseScroll);
+        llmPanel.add(split, BorderLayout.CENTER);
+
+        tabbedPane.addTab("SendToLLM", llmPanel);
+
+        // ======== Finish up ========
+        mainPanel.add(tabbedPane, BorderLayout.CENTER);
+    }
+
+
+        private void showSettingsDialog() {
+        // TODO: implement settings UI (e.g., API key input)
+        JOptionPane.showMessageDialog(mainPanel, "Settings not yet implemented.", "Settings", JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    // Example of running a long task without freezing UI
+    private void performLongTask() {
+        new SwingWorker<Void, Void>() {
+            @Override
+            protected Void doInBackground() throws Exception {
+                progressBar.setIndeterminate(true);
+                // TODO: replace with actual logic (e.g., send request, parse response)
+                Thread.sleep(2000);
+                return null;
             }
 
-            String raw = helpers.bytesToString(lastSelectedMessage.getRequest());
-            String headersOnly = raw.split("\r\n\r\n")[0];
-            String template = pentestTemplates.get(toolSelector.getSelectedItem());
-            String prompt = template.replace("{{ request }}", raw).replace("{{ headers }}", headersOnly);
-
-            String serverUrl = urlField.getText().trim();
-            String model = modelField.getText().trim();
-            sendPromptToLLM(prompt, serverUrl, model);
-        });
-
-        // ========== Add All Tabs ==========
-        tabs.addTab("Config", cfg);
-        tabs.addTab("History", histPanel);
-        tabs.addTab("Pentester Tools", pentestPanel);
-        mainPanel.add(tabs, BorderLayout.CENTER);
+            @Override
+            protected void done() {
+                progressBar.setIndeterminate(false);
+                // TODO: populate tableModel with results
+                tableModel.addRow(new Object[]{"SampleReq", "SampleResp", "SampleData"});
+            }
+        }.execute();
     }
+
+    @Override public String getTabCaption() { return "SendToLLM"; }
+
+    
+    public Component getUiComponent() {
+        if (mainPanel == null) {
+            mainPanel = new JPanel(new BorderLayout());
+            JTabbedPane tabbedPane = new JTabbedPane();
+
+            // Main Tab
+            JPanel tablePanel = createMainPanel();
+            tabbedPane.addTab("Main", tablePanel);
+
+            // Send Tab
+            JPanel sendPanel = createSendPanel();
+            tabbedPane.addTab("Send", sendPanel);
+
+            mainPanel.add(tabbedPane, BorderLayout.CENTER);
+        }
+        return mainPanel;
+
+    }
+
+
+    private JPanel createSendPanel() {
+        JPanel panel = new JPanel(new BorderLayout(5, 5));
+
+        // Prompt area
+        promptArea = new JTextArea(5, 40);
+        promptArea.setBorder(BorderFactory.createTitledBorder("Prompt"));
+        panel.add(new JScrollPane(promptArea), BorderLayout.NORTH);
+
+        // Send button
+        sendButton = new JButton("Send");
+        sendButton.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                String prompt = promptArea.getText();
+                sendPromptToLLM(prompt);
+            }
+        });
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        buttonPanel.add(sendButton);
+        panel.add(buttonPanel, BorderLayout.CENTER);
+
+        // Response area
+        responseArea = new JTextArea(10, 40);
+        responseArea.setBorder(BorderFactory.createTitledBorder("Response"));
+        responseArea.setEditable(false);
+        panel.add(new JScrollPane(responseArea), BorderLayout.SOUTH);
+
+        return panel;
+    }
+
 }
