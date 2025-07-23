@@ -81,8 +81,6 @@ public class BurpExtender implements burp.IBurpExtender, burp.IContextMenuFactor
     private JTextArea promptArea;
     private JTextArea responseArea;
     private JButton sendButton;
-    private String endpoint = "http://localhost:11434";
-    private String model = "ollama";
 
     
     // split your URL into host:port + suffix
@@ -261,11 +259,6 @@ public class BurpExtender implements burp.IBurpExtender, burp.IContextMenuFactor
     private void runLLMWithTemplate(String templateName, IHttpRequestResponse message) {
         // Build the exact endpoint and hand it to sendPromptToLLM
         callbacks.printOutput("▶️ runLLMWithTemplate(template=" + templateName + ")");
-        String host     = serverField.getText().trim();
-        String suffix   = suffixLabel.getText();  // "/v1/chat/completions"
-        String fullUrl  = "http://" + host + suffix;
-
-        String model    = modelField.getText().trim();
         String rawReq   = helpers.bytesToString(message.getRequest());
         String template = templates.getOrDefault(templateName, "{{ request }}");
         String prompt   = template.replace("{{ request }}", rawReq);
@@ -275,11 +268,6 @@ public class BurpExtender implements burp.IBurpExtender, burp.IContextMenuFactor
 
     private void runPentesterTool(String toolName, IHttpRequestResponse message) {
         callbacks.printOutput("▶️ runPentesterTool(tool=" + toolName + ")");
-        String host     = serverField.getText().trim();
-        String suffix   = suffixLabel.getText();
-        String fullUrl  = "http://" + host + suffix;
-
-        String model    = modelField.getText().trim();
         String rawReq   = helpers.bytesToString(message.getRequest());
         String headers  = rawReq.split("\r\n\r\n")[0];
 
@@ -292,13 +280,17 @@ public class BurpExtender implements burp.IBurpExtender, burp.IContextMenuFactor
     }
 
     private void sendPromptToLLM(String promptText) {
-        callbacks.printOutput("▶️ sendPromptToLLM called. endpoint=" + endpoint + " model=" + model);
+        String host   = serverField != null ? serverField.getText().trim() : "127.0.0.1:11434";
+        String suffix = suffixLabel != null ? suffixLabel.getText() : "/v1/chat/completions";
+        String targetEndpoint = "http://" + host + suffix;
+        String modelName      = modelField != null ? modelField.getText().trim() : "ollama";
+        callbacks.printOutput("▶️ sendPromptToLLM called. endpoint=" + targetEndpoint + " model=" + modelName);
         HttpURLConnection conn = null;
         String finalResponse = "";
         try {
             // Build JSON payload using built-in org.json
             JSONObject payload = new JSONObject();
-            payload.put("model", model);
+            payload.put("model", modelName);
             JSONArray messages = new JSONArray();
             JSONObject message = new JSONObject();
             message.put("role", "user");
@@ -309,7 +301,7 @@ public class BurpExtender implements burp.IBurpExtender, burp.IContextMenuFactor
             callbacks.printOutput("🔍 JSON payload: " + jsonBody);
 
             // HTTP POST
-            URL url = new URL(endpoint);
+            URL url = new URL(targetEndpoint);
             conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("POST");
             conn.setRequestProperty("Content-Type", "application/json");
@@ -564,7 +556,8 @@ public class BurpExtender implements burp.IBurpExtender, burp.IContextMenuFactor
         promptArea = new JTextArea();
         promptArea.setLineWrap(true);
         promptArea.setWrapStyleWord(true);
-        promptArea.setEditable(false);
+        // Allow the user to edit the prompt before sending
+        promptArea.setEditable(true);
         JScrollPane promptScroll = new JScrollPane(promptArea);
         promptScroll.setBorder(BorderFactory.createTitledBorder("Prompt"));
 
@@ -579,6 +572,13 @@ public class BurpExtender implements burp.IBurpExtender, burp.IContextMenuFactor
         split.setTopComponent(promptScroll);
         split.setBottomComponent(responseScroll);
         llmPanel.add(split, BorderLayout.CENTER);
+
+        // Send button so users can manually dispatch prompts
+        sendButton = new JButton("Send");
+        sendButton.addActionListener(e -> sendPromptToLLM(promptArea.getText()));
+        JPanel sendPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        sendPanel.add(sendButton);
+        llmPanel.add(sendPanel, BorderLayout.SOUTH);
 
         tabbedPane.addTab("SendToLLM", llmPanel);
 
