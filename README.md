@@ -1,6 +1,8 @@
 # 🧠 Send to LLM Enhanced (Burp Extension)
 
 Send to LLM Enhanced is a Burp Suite extension that integrates powerful AI analysis into your web security workflow. It allows you to send HTTP requests directly from Burp to a locally or remotely hosted large language model (LLM) for intelligent insights and automated assessments.
+
+**Latest Version**: 2025.01.05.1 - Major performance improvements and code cleanup! See [CHANGELOG.md](CHANGELOG.md) for details.
 ## ✨ Features
 
     🔍 Right-click "Send to →" Menu
